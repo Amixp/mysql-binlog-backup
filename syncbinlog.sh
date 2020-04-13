@@ -144,7 +144,7 @@ HOST=127.0.0.1
 ARGS="$@"
 parse_config
 
-sshc="ssh -h${HOST} "
+sshc="ssh ${HOST} "
 
 if [[ -z ${BACKUP_DIR} ]]; then
     echo "ERROR: Please, specify a destination directory for backups using --backup-dir parameter."
