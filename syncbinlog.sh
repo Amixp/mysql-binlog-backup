@@ -20,6 +20,7 @@ usage() {
     echo -e "   --compress-app=      Compression app (defaults to 'pigz'). Compression parameters can be given as well (e.g. pigz -p6 for 6 threaded compression)"
     echo -e "   --rotate=X           Rotate backup files for X days (defaults to 30)"
     echo -e "   --verbose=           Write logs to stdout as well"
+    echo -e "   --host=              Source host for read bin-log index"
     exit 1
 }
 
@@ -50,6 +51,9 @@ parse_config() {
             ;;
             --backup-dir=*)
             BACKUP_DIR="${arg#*=}"
+            ;;
+            --host=*)
+            HOST="${arg#*=}"
             ;;
             --mysql-conf=*)
             MYSQL_CONFIG_FILE="${arg#*=}"
@@ -135,6 +139,8 @@ COMPRESS=false
 COMPRESS_APP="pigz -p$(($(nproc) - 1))"
 ROTATE_DAYS=30
 VERBOSE=false
+HOST=127.0.0.1
+sshc="ssh -h${HOST} "
 
 ARGS="$@"
 parse_config
@@ -163,7 +169,7 @@ log "Initializing binlog sync"
 log "Backup destination: $BACKUP_DIR"
 log "Log destination: $LOG_DIR"
 log "Reading mysql client configuration from $MYSQL_CONFIG_FILE"
-
+DATADIR=$(mysql --defaults-extra-file=${MYSQL_CONFIG_FILE} -Bse "show global variables like 'datadir'")
 BINLOG_BASENAME=$(mysql --defaults-extra-file=${MYSQL_CONFIG_FILE} -Bse "SHOW GLOBAL VARIABLES LIKE 'log_bin_basename'")
 if [[ $? -eq "1" ]]; then
     log "Please, check your mysql credentials" "ERROR"
@@ -172,14 +178,19 @@ fi
 
 ${COMPRESS} == true && log "Compression enabled"
 
+DATADIR=$(basename `echo ${DATADIR} | tail -1 | awk '{ print $2 }'`)
+log "Data dir basename is ${DATADIR}"
+
 BINLOG_BASENAME=$(basename `echo ${BINLOG_BASENAME} | tail -1 | awk '{ print $2 }'`)
-log "Binlog file basename is $BINLOG_BASENAME"
+if [ ${BINLOG_BASENAME} == "" ];then BINLOG_BASENAME="mysql-bin"; fi
+log "Binlog file basename is ${BINLOG_BASENAME}"
 
-BINLOG_INDEX_FILE=`mysql --defaults-extra-file=${MYSQL_CONFIG_FILE} -Bse "SHOW GLOBAL VARIABLES LIKE 'log_bin_index'" | tail -1 | awk '{ print $2 }'`
-log "Binlog index file is $BINLOG_BASENAME"
+BINLOG_INDEX_FILE=$(mysql --defaults-extra-file=${MYSQL_CONFIG_FILE} -Bse "SHOW GLOBAL VARIABLES LIKE 'log_bin_index'" | tail -1 | awk '{ print $2 }')
+if [ ${BINLOG_INDEX_FILE} == "" ];then BINLOG_INDEX_FILE="${BINLOG_BASENAME}.index"; fi
+log "Binlog index file is ${BINLOG_INDEX_FILE}"
 
-BINLOG_LAST_FILE=`tail -1 "$BINLOG_INDEX_FILE"`
-log "Most recent binlog file is $BINLOG_LAST_FILE"
+BINLOG_LAST_FILE=$($sshc "tail -1 '${BINLOG_INDEX_FILE}'")
+log "Most recent binlog file is ${BINLOG_LAST_FILE}"
 
 while :
 do
@@ -207,7 +218,7 @@ do
     fi
 
     # Check last backup file to continue from (2> /dev/null suppresses error output)
-    LAST_BACKUP_FILE=`ls -1 ${BACKUP_DIR}/${BACKUP_PREFIX}* 2> /dev/null | grep -v ".original" | tail -n 1`
+    LAST_BACKUP_FILE=$($sshc 'ls -1 ${BACKUP_DIR}/${BACKUP_PREFIX}* 2> /dev/null | grep -v ".original" | tail -n 1')
 
     BINLOG_SYNC_FILE_NAME=""
 
@@ -215,10 +226,9 @@ do
         log "No backup file found, starting from oldest binary log in the server"
 
         # If there is no backup yet, find the first binlog file to start copying
-        BINLOG_START_FILE=`head -n 1 "$BINLOG_INDEX_FILE"`
+        BINLOG_START_FILE=$($sshc "head -n 1 '$BINLOG_INDEX_FILE'")
         log "The oldest binlog file is ${BINLOG_START_FILE}"
-
-        BINLOG_SYNC_FILE_NAME=`basename "${BINLOG_START_FILE}"`
+        BINLOG_SYNC_FILE_NAME=$(basename "${BINLOG_START_FILE}")
     else
         # If mysqlbinlog crashes/exits in the middle of execution, we cant know the last position reliably.
         # Thats why restart syncing from the beginning of the same binlog file
@@ -230,7 +240,7 @@ do
         # In this case, there will be a gap in binlog backups
 
         # Storing a backup of the latest binlog backup file before exit/crash
-        FILE_SIZE=$(stat -c%s ${BACKUP_DIR}/${LAST_BACKUP_FILE})
+        FILE_SIZE=$($sshc "stat -c%s ${BACKUP_DIR}/${LAST_BACKUP_FILE}")
         if [[ ${FILE_SIZE} -gt 0 ]]; then
             log "Backing up last binlog file ${LAST_BACKUP_FILE}"
             mv "${BACKUP_DIR}/${LAST_BACKUP_FILE}" "${BACKUP_DIR}/${LAST_BACKUP_FILE}.original"
