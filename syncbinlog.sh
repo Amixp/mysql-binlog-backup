@@ -140,10 +140,11 @@ COMPRESS_APP="pigz -p$(($(nproc) - 1))"
 ROTATE_DAYS=30
 VERBOSE=false
 HOST=127.0.0.1
-sshc="ssh -h${HOST} "
 
 ARGS="$@"
 parse_config
+
+sshc="ssh -h${HOST} "
 
 if [[ -z ${BACKUP_DIR} ]]; then
     echo "ERROR: Please, specify a destination directory for backups using --backup-dir parameter."
@@ -218,7 +219,7 @@ do
     fi
 
     # Check last backup file to continue from (2> /dev/null suppresses error output)
-    LAST_BACKUP_FILE=$($sshc 'ls -1 ${BACKUP_DIR}/${BACKUP_PREFIX}* 2> /dev/null | grep -v ".original" | tail -n 1')
+    LAST_BACKUP_FILE=$($sshc "ls -1 ${BACKUP_DIR}/${BACKUP_PREFIX}* 2> /dev/null | grep -v '.original' | tail -n 1")
 
     BINLOG_SYNC_FILE_NAME=""
 
